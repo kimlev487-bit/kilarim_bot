@@ -1,302 +1,122 @@
-import asyncio
 import json
 import os
-from pathlib import Path
-
-from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
+import asyncio
 from dotenv import load_dotenv
 
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-# =========================
-# НАСТРОЙКИ
-# =========================
-
+# ===== Загрузка токена из .env =====
 load_dotenv()
 
-TOKEN = os.getenv("TELEGRAM_API_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-if not TOKEN:
-    raise ValueError("Не найден TELEGRAM_API_TOKEN в файле .env")
+if not BOT_TOKEN:
+    raise ValueError(
+        "❌ BOT_TOKEN не найден!\n"
+        "Создай файл .env в корне проекта и добавь строку:\n"
+        "BOT_TOKEN=твой_токен_от_BotFather"
+    )
 
+# ===== Файл для хранения данных =====
+DATA_FILE = "user_data.json"
 
-# Файл, где будут храниться данные
-DATA_FILE = Path("data.json")
-
-bot = Bot(token=TOKEN)
+# ===== Инициализация бота =====
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
-# =========================
-# РАБОТА С JSON
-# =========================
-
+# ===== Работа с JSON =====
 def load_data():
-    """Загружает данные из JSON."""
-
-    if not DATA_FILE.exists():
-        return {}
-
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as file:
-            return json.load(file)
-
-    except (json.JSONDecodeError, OSError):
-        return {}
+    """Загружает данные из JSON-файла"""
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
 
 
 def save_data(data):
-    """Сохраняет данные в JSON."""
-
-    with open(DATA_FILE, "w", encoding="utf-8") as file:
-        json.dump(
-            data,
-            file,
-            ensure_ascii=False,
-            indent=4
-        )
+    """Сохраняет данные в JSON-файл"""
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-data = load_data()
+def get_user_data(user_id):
+    """Получает данные пользователя"""
+    data = load_data()
+    return data.get(str(user_id), {"files": [], "counter": 0})
 
 
-# =========================
-# INLINE-КЛАВИАТУРА
-# =========================
-
-def main_keyboard():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="📝 Добавить",
-                    callback_data="add"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📚 Мои записи",
-                    callback_data="list"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🗑 Удалить",
-                    callback_data="delete"
-                )
-            ]
-        ]
-    )
+def update_user_data(user_id, user_data):
+    """Обновляет данные пользователя"""
+    data = load_data()
+    data[str(user_id)] = user_data
+    save_data(data)
 
 
-# =========================
-# ВРЕМЕННОЕ СОСТОЯНИЕ
-# =========================
+# ===== Клавиатура =====
+def get_main_keyboard():
+    """Создаёт инлайн-клавиатуру с двумя кнопками"""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📁 Сохранить файл", callback_data="save_file")
+    builder.button(text="📊 Мои файлы", callback_data="my_files")
+    builder.adjust(2)
+    return builder.as_markup()
 
-waiting_for_text = set()
-waiting_for_delete = set()
 
-
-# =========================
-# /start
-# =========================
-
-@dp.message(CommandStart())
-async def start(message: Message):
-
-    user_id = str(message.from_user.id)
-
-    # Если пользователя ещё нет
-    if user_id not in data:
-        data[user_id] = []
-
-        save_data(data)
+# ===== Обработчики =====
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    """Обработчик команды /start"""
+    user_id = message.from_user.id
+    user_data = get_user_data(user_id)
 
     await message.answer(
-        "👋 Привет!\n\n"
-        "Я бот для хранения твоих заметок.\n"
-        "Выбери действие:",
-        reply_markup=main_keyboard()
+        f"Привет, {message.from_user.first_name}!\n\n"
+        f"Я бот для сохранения файлов.\n"
+        f"Твоих сохранённых файлов: {len(user_data['files'])}\n\n"
+        f"Используй кнопки ниже:",
+        reply_markup=get_main_keyboard(),
     )
 
 
-# =========================
-# КНОПКА "ДОБАВИТЬ"
-# =========================
+@dp.callback_query(lambda c: c.data == "save_file")
+async def process_save_file(callback: types.CallbackQuery):
+    """Обработчик кнопки сохранения файла"""
+    user_id = callback.from_user.id
+    user_data = get_user_data(user_id)
 
-@dp.callback_query(F.data == "add")
-async def add_button(callback: CallbackQuery):
-
-    user_id = str(callback.from_user.id)
-
-    waiting_for_text.add(user_id)
+    user_data["counter"] += 1
+    user_data["files"].append(f"Файл #{user_data['counter']}")
+    update_user_data(user_id, user_data)
 
     await callback.message.answer(
-        "📝 Напиши информацию, которую нужно запомнить.\n\n"
-        "Например:\n"
-        "Купить молоко\n"
-        "Пароль от Wi-Fi: example123\n"
-        "Идея для проекта: сделать сайт"
+        f"✅ Файл сохранён!\n"
+        f"Всего файлов: {len(user_data['files'])}"
     )
+    await callback.answer("Файл сохранён!")
 
+
+@dp.callback_query(lambda c: c.data == "my_files")
+async def process_my_files(callback: types.CallbackQuery):
+    """Обработчик кнопки просмотра файлов"""
+    user_id = callback.from_user.id
+    user_data = get_user_data(user_id)
+
+    if not user_data["files"]:
+        await callback.message.answer("У тебя пока нет сохранённых файлов.")
+    else:
+        files_list = "\n".join(f"• {f}" for f in user_data["files"])
+        await callback.message.answer(f"📁 Твои файлы:\n\n{files_list}")
     await callback.answer()
 
 
-# =========================
-# ПОЛУЧЕНИЕ ТЕКСТА
-# =========================
-
-@dp.message(F.text)
-async def receive_text(message: Message):
-
-    user_id = str(message.from_user.id)
-
-    # Если пользователь добавляет запись
-    if user_id in waiting_for_text:
-
-        text = message.text.strip()
-
-        if not text:
-            await message.answer("❌ Запись не может быть пустой.")
-            return
-
-        if user_id not in data:
-            data[user_id] = []
-
-        data[user_id].append(text)
-
-        save_data(data)
-
-        waiting_for_text.remove(user_id)
-
-        await message.answer(
-            "✅ Запомнил!\n\n"
-            f"📌 {text}",
-            reply_markup=main_keyboard()
-        )
-
-        return
-
-    # Если пользователь удаляет запись
-    if user_id in waiting_for_delete:
-
-        try:
-            number = int(message.text)
-        except ValueError:
-            await message.answer(
-                "❌ Напиши номер записи.\n"
-                "Например: 2"
-            )
-            return
-
-        notes = data.get(user_id, [])
-
-        if number < 1 or number > len(notes):
-            await message.answer(
-                "❌ Записи с таким номером нет."
-            )
-            return
-
-        deleted = notes.pop(number - 1)
-
-        save_data(data)
-
-        waiting_for_delete.remove(user_id)
-
-        await message.answer(
-            "🗑 Запись удалена:\n\n"
-            f"📌 {deleted}",
-            reply_markup=main_keyboard()
-        )
-
-        return
-
-
-# =========================
-# КНОПКА "МОИ ЗАПИСИ"
-# =========================
-
-@dp.callback_query(F.data == "list")
-async def list_button(callback: CallbackQuery):
-
-    user_id = str(callback.from_user.id)
-
-    notes = data.get(user_id, [])
-
-    if not notes:
-        await callback.message.answer(
-            "📭 У тебя пока нет сохранённых записей.",
-            reply_markup=main_keyboard()
-        )
-
-        await callback.answer()
-        return
-
-    text = "📚 Твои записи:\n\n"
-
-    for i, note in enumerate(notes, start=1):
-        text += f"{i}. {note}\n\n"
-
-    await callback.message.answer(
-        text,
-        reply_markup=main_keyboard()
-    )
-
-    await callback.answer()
-
-
-# =========================
-# КНОПКА "УДАЛИТЬ"
-# =========================
-
-@dp.callback_query(F.data == "delete")
-async def delete_button(callback: CallbackQuery):
-
-    user_id = str(callback.from_user.id)
-
-    notes = data.get(user_id, [])
-
-    if not notes:
-        await callback.message.answer(
-            "📭 У тебя нет записей для удаления.",
-            reply_markup=main_keyboard()
-        )
-
-        await callback.answer()
-        return
-
-    text = "🗑 Какую запись удалить?\n\n"
-
-    for i, note in enumerate(notes, start=1):
-        text += f"{i}. {note}\n"
-
-    text += "\nНапиши номер записи."
-
-    waiting_for_delete.add(user_id)
-
-    await callback.message.answer(text)
-
-    await callback.answer()
-
-
-# =========================
-# ЗАПУСК
-# =========================
-
+# ===== Запуск =====
 async def main():
-
-    print("Бот запущен!")
-
+    print("✅ Бот запущен...")
     await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
